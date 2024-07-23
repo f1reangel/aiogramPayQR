@@ -1,5 +1,6 @@
 from fastapi import APIRouter, status, HTTPException,BackgroundTasks
 from fastapi.responses import JSONResponse
+from fastapi import Request
 
 from app.api.models.payment_model import PaymentCreate, PaymentView
 from app.config import *
@@ -8,7 +9,7 @@ from app.api.payments.helper import get_qr_code
 import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore, storage
-from fastapi import Request
+
 
 from datetime import timezone, datetime
 
@@ -41,7 +42,7 @@ def all_payment_info():
 
 
 @router.get("/info/{order_id}/detail/", response_model=PaymentView)
-async def info_detail(order_id: str):
+async def info_detail_payment(order_id: str):
     payment_ref = db.collection('payment')
 
     query = payment_ref.where('order_id', '==', order_id).stream()
@@ -72,6 +73,10 @@ def save_payment(data: PaymentCreate, background_tasks: BackgroundTasks):
     liqpay = LiqPay(PUBLIC_LIQPAY_KEY, PRIVATE_LIQPAY_KEY)
     order_id = uuid.uuid4().hex
     data.time_qr_code = int(data.time_qr_code * 60)
+
+    if data.amount < 0:
+        raise HTTPException(status_code=400, detail="Amount must be a positive number")
+    
     pay_params = {
         "action": "payqr",
         "version": "3",
@@ -125,7 +130,7 @@ async def webhook(request: Request):
         raise HTTPException(status_code=400, detail="Invalid signature")
 
 
-def process_qr_code(res, pay_params, order_id, time_qr_code):
+def process_qr_code(res: dict, pay_params: dict, order_id: str, time_qr_code: int):
     current_time = int(datetime.now(tz=timezone.utc).timestamp())
     qr_url = res.get('qr_code')
     qr_image = get_qr_code(qr_url)
@@ -139,7 +144,7 @@ def process_qr_code(res, pay_params, order_id, time_qr_code):
     db.collection('payment').document(order_id).set(pay_params)
 
 
-@router.delete("/delete")
+@router.delete("/delete/")
 def delete_doc(order_id: str):
     db.collection("payment").document(order_id).delete()
     return JSONResponse(content = {"message":"deleted document"}, status_code = status.HTTP_200_OK)
