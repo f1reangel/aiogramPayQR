@@ -1,4 +1,4 @@
-from fastapi import APIRouter, status, HTTPException,BackgroundTasks
+from fastapi import APIRouter, status, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi import Request
 
@@ -10,10 +10,10 @@ import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore, storage
 
-
 from datetime import timezone, datetime
 
 from liqpay import LiqPay
+from aiogram import Bot
 
 import json
 import base64
@@ -25,11 +25,10 @@ firebase_info_config = json.loads(FIREBASE_SERVICE_ACCOUNT_KEY)
 firebase_info_storage_bucket = json.loads(STORAGE_BUCKET_URL)
 
 cred = credentials.Certificate(firebase_info_config)
-app = firebase_admin.initialize_app(cred,firebase_info_storage_bucket)
-
+app = firebase_admin.initialize_app(cred, firebase_info_storage_bucket)
+telegram_bot = Bot(token=TOKEN_TELEGRAM_BOT)
 db = firestore.client()
 bucket = storage.bucket()
-
 
 @router.get("/all/info/")
 def all_payment_info():
@@ -38,13 +37,11 @@ def all_payment_info():
     all_payments = {}
     for doc in docs:
         all_payments[doc.id] = doc.to_dict()
-    return JSONResponse(content = all_payments, status_code= status.HTTP_200_OK)
-
+    return JSONResponse(content=all_payments, status_code=status.HTTP_200_OK)
 
 @router.get("/info/{order_id}/detail/", response_model=PaymentView)
 async def info_detail_payment(order_id: str):
     payment_ref = db.collection('payment')
-
     query = payment_ref.where('order_id', '==', order_id).stream()
     payment_data = None
     for doc in query:
@@ -67,16 +64,15 @@ async def info_detail_payment(order_id: str):
     )
     return payment
 
-
 @router.post("/save/")
-def save_payment(data: PaymentCreate, background_tasks: BackgroundTasks):
+def save_payment(data: PaymentCreate):
     liqpay = LiqPay(PUBLIC_LIQPAY_KEY, PRIVATE_LIQPAY_KEY)
     order_id = uuid.uuid4().hex
     data.time_qr_code = int(data.time_qr_code * 60)
 
     if data.amount < 0:
         raise HTTPException(status_code=400, detail="Amount must be a positive number")
-    
+
     pay_params = {
         "action": "payqr",
         "version": "3",
@@ -84,19 +80,30 @@ def save_payment(data: PaymentCreate, background_tasks: BackgroundTasks):
         "currency": data.currency,
         "description": data.description,
         "order_id": str(order_id),
-        "server_url": "https://b59b-194-44-45-59.ngrok-free.app/payments/webhook/",
+        "server_url": "https://8245-194-44-45-59.ngrok-free.app/payments/webhook/",
         "date_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
-        "time_qr_code": data.time_qr_code
+        "time_qr_code": data.time_qr_code,
+        "telegram_user_id": data.telegram_user_id
     }
     res = liqpay.api("request", pay_params)
 
     if res and res.get('status') == 'wait_qr':
         pay_params['status'] = res.get('status')
-        background_tasks.add_task(process_qr_code, res, pay_params, order_id, data.time_qr_code)
-        return JSONResponse(content={'message': 'Payment processing started', 'order_id': order_id}, status_code=status.HTTP_202_ACCEPTED)
-    else:
-        return JSONResponse(content = {"message":'Payment not created'}, status_code=status.HTTP_400_BAD_REQUEST)
+        current_time = int(datetime.now(tz=timezone.utc).timestamp())
+        qr_url = res.get('qr_code')
+        qr_image = get_qr_code(qr_url)
+        blob = bucket.blob(f'{order_id}_qr.png')
+        blob.upload_from_file(qr_image, content_type='image/png')
 
+        download_url = blob.generate_signed_url(expiration=data.time_qr_code + current_time)
+
+        pay_params['url'] = download_url
+        pay_params['url_qr_code'] = res.get("qr_code")
+        db.collection('payment').document(order_id).set(pay_params)
+
+        return JSONResponse(content={'message': 'Payment processing started', 'order_id': order_id, 'url': download_url}, status_code=status.HTTP_202_ACCEPTED)
+    else:
+        return JSONResponse(content={"message": 'Payment not created'}, status_code=status.HTTP_400_BAD_REQUEST)
 
 @router.post("/webhook/")
 async def webhook(request: Request):
@@ -117,32 +124,23 @@ async def webhook(request: Request):
         payment_status = response.get('status')
         order_id = response.get('order_id')
 
-    if payment_status == 'success':
-        db.collection("payment").document(order_id).update({'status':payment_status})
-        return JSONResponse(content={'message': 'Success','order_id':order_id}, status_code=status.HTTP_200_OK)
-    if payment_status == 'error':
-        db.collection("payment").document(order_id).update({'status':payment_status})
-        return JSONResponse(content={'error': 'BAD_REQUEST','order_id':order_id}, status_code=status.HTTP_400_BAD_REQUEST)
-    if payment_status == 'failure':
-        db.collection("payment").document(order_id).update({'status':payment_status})
-        return JSONResponse(content={'failure': 'Payment failed','order_id':order_id}, status_code=status.HTTP_400_BAD_REQUEST)
+        payment_ref = db.collection("payment").document(order_id)
+        payment_data = payment_ref.get().to_dict()
+
+        if payment_data is None:
+            raise HTTPException(status_code=404, detail="Payment not found")
+
+        if payment_status == 'success':
+            payment_ref.update({'status': payment_status})
+            telegram_user_id = payment_data.get('telegram_user_id')
+            if telegram_user_id:
+                await telegram_bot.send_message(telegram_user_id, f"Payment successful! Order ID: {order_id}")
+            return JSONResponse(content={'message': 'Success', 'order_id': order_id}, status_code=status.HTTP_200_OK)
+        else:
+            payment_ref.update({'status': payment_status})
+            return JSONResponse(content={'message': 'Payment status updated', 'order_id': order_id}, status_code=status.HTTP_200_OK)
     else:
         raise HTTPException(status_code=400, detail="Invalid signature")
-
-
-def process_qr_code(res: dict, pay_params: dict, order_id: str, time_qr_code: int):
-    current_time = int(datetime.now(tz=timezone.utc).timestamp())
-    qr_url = res.get('qr_code')
-    qr_image = get_qr_code(qr_url)
-    blob = bucket.blob(f'{order_id}_qr.png')
-    blob.upload_from_file(qr_image, content_type='image/png')
-        
-    download_url = blob.generate_signed_url(expiration=time_qr_code+current_time)
-
-    pay_params['url'] = download_url
-    pay_params['url_qr-code'] = res.get("qr_code")
-    db.collection('payment').document(order_id).set(pay_params)
-
 
 @router.delete("/delete/")
 def delete_doc(order_id: str):
