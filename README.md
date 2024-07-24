@@ -101,7 +101,7 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 3. The bot will generate a payment and provide a QR code link.
 
 #### Payment Webhook
-The webhook endpoint `/payments/webhook/` handles payment status updates from LiqPay and sends a notification via Telegram upon successful payment.
+The webhook endpoint /payments/webhook/ handles payment status updates from LiqPay. It sends a telegram notification when a payment is successful.
 
 ---
 
