@@ -27,8 +27,8 @@ This project is a comprehensive payment processing system that integrates multip
 ## Installation
 1. Clone the repository:
     ```sh
-    git clone https://github.com/yourusername/payment-processing-system.git
-    cd payment-processing-system
+    git clone https://github.com/f1reangel/aiogramPayQR.git
+    cd aiogramPayQR
     ```
 
 2. Create a virtual environment and activate it:
