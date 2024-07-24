@@ -1,6 +1,6 @@
 # Payment Processing System
 
-This project is a comprehensive payment processing system that integrates multiple technologies including FastAPI, Firebase, LiqPay, and Aiogram to provide a seamless experience for handling payments and notifications via Telegram.
+This project is a comprehensive payment processing system that integrates multiple technologies such as FastAPI, Firebase, LiqPay and Aiogram to provide a seamless experience for handling payments and messages over Telegram.
 
 ## Table of Contents
 - [Features](#features)
